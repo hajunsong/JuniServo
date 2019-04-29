@@ -4,261 +4,554 @@
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWindow)
 {
     ui->setupUi(this);
-    QList<QString> portItems = {"COM1","COM2","COM3","COM4","COM5"};
-    QList<QString> baudItems = {"9600","14400","19200","38400","57600","115200","229800","459700","930200"};
-    ui->comboPort->addItems(portItems);
-    ui->comboBaud->addItems(baudItems);
 
     ReadSettings();
 
-    servo = new JuniServo();
+    serial = new QSerialPort(this);
 
     connect(ui->btnConnect, &QPushButton::clicked, this, &MainWindow::btnConnectClicked);
-    connect(ui->btnReady, &QPushButton::clicked, this, &MainWindow::btnReadyClicked);
-    connect(ui->btnRun, &QPushButton::clicked, this, &MainWindow::btnRunClicked);
 
-    connectState = false;
+    connect(serial, &QSerialPort::errorOccurred, this, &MainWindow::handleError);
+    connect(serial, &QSerialPort::readyRead, this, &MainWindow::readData);
 
     timer = new QTimer(this);
     connect(timer, &QTimer::timeout, this, &MainWindow::update);
-    timer->setInterval(100);
-    direction = true;
-    run = false;
+    timer->setInterval(15);
 
-    vel_new = 0;
-    tor_new = 0;
-    connect(ui->btnApply, &QPushButton::clicked, this, &MainWindow::btnApplyClicked);
+    indx = 0;
+    indx_pd = 0;
+    indx_conf = 0;
+
+    ui->hsPos->setEnabled(false);
+    ui->hsVel->setEnabled(false);
+    ui->hsTor->setEnabled(false);
+
+    connect(ui->hsPosNew, &QSlider::sliderPressed, timer, &QTimer::stop);
+    connect(ui->hsTorNew, &QSlider::sliderPressed, timer, &QTimer::stop);
+    connect(ui->hsVelNew, &QSlider::sliderPressed, timer, &QTimer::stop);
+    connect(ui->hsPosNew, &QSlider::sliderMoved, timer, &QTimer::stop);
+    connect(ui->hsTorNew, &QSlider::sliderMoved, timer, &QTimer::stop);
+    connect(ui->hsVelNew, &QSlider::sliderMoved, timer, &QTimer::stop);
+    connect(ui->hsPosNew, &QSlider::valueChanged, this, &MainWindow::sliderValueChanged);
+    connect(ui->hsTorNew, &QSlider::valueChanged, this, &MainWindow::sliderValueChanged);
+    connect(ui->hsVelNew, &QSlider::valueChanged, this, &MainWindow::sliderValueChanged);
+    connect(ui->hsPosNew, &QSlider::sliderReleased, this, &MainWindow::sliderValueChanged);
+    connect(ui->hsTorNew, &QSlider::sliderReleased, this, &MainWindow::sliderValueChanged);
+    connect(ui->hsVelNew, &QSlider::sliderReleased, this, &MainWindow::sliderValueChanged);
+
+    connect(ui->btnPdInfor, &QPushButton::clicked, this, &MainWindow::btnProductInforClicked);
+    connect(ui->btnConfInfor, &QPushButton::clicked, this, &MainWindow::btnConfigInforClicked);
+    timerProductInfor = new QTimer(this);
+    connect(timerProductInfor, &QTimer::timeout, this, &MainWindow::updateProductInfor);
+    timerProductInfor->setInterval(15);
+    timerConfigInfor = new QTimer(this);
+    connect(timerConfigInfor, &QTimer::timeout, this, &MainWindow::updateConfigInfor);
+    timerConfigInfor->setInterval(15);
 }
 
 MainWindow::~MainWindow()
 {
+    serial->close();
     WriteSettings();
-    delete servo;
     delete ui;
 }
 
 void MainWindow::ReadSettings()
 {
-    QSettings settings("JUNISERVO", "MultiTest");
+    QSettings settings("JUNISERVO", "Test Project");
     restoreGeometry(settings.value("geometry").toByteArray());
     restoreState(settings.value("windowState").toByteArray());
-    QString Velocity = settings.value("Velocity").toString();
-    QString Torque = settings.value("Torque").toString();
-    int indexPort = settings.value("Port").toInt();
-    int indexBaud = settings.value("Baud").toInt();
-    ui->txtVelNew->setText(Velocity);
-    ui->txtTorNew->setText(Torque);
-    ui->comboPort->setCurrentIndex(indexPort);
-    ui->comboBaud->setCurrentIndex(indexBaud);
+    QString Port = settings.value("Port").toString();
+    QString Baud = settings.value("Baud").toString();
+    ui->txtPort->setText(Port);
+    ui->txtBaud->setText(Baud);
 }
 
 void MainWindow::WriteSettings()
 {
-    QSettings settings("JUNISERVO", "MultiTest");
-    settings.setValue("Velocity", ui->txtVelNew->text());
-    settings.setValue("Torque", ui->txtTorNew->text());
+    QSettings settings("JUNISERVO", "Test Project");
+    settings.setValue("Port", ui->txtPort->text());
+    settings.setValue("Baud", ui->txtBaud->text());
     settings.setValue("geometry", saveGeometry());
     settings.setValue("windowState", saveState());
-    settings.setValue("Port",ui->comboPort->currentIndex());
-    settings.setValue("Baud",ui->comboBaud->currentIndex());
 }
 
 void MainWindow::btnConnectClicked(){
-    if (connectState){
-        servo->disconnect();
-        connectState = false;
+    QString name = ui->txtPort->text();
+    qint32 baud = ui->txtBaud->text().toInt();
+    QSerialPort::DataBits bit = QSerialPort::DataBits::Data8;
+    QSerialPort::Parity parity = QSerialPort::Parity::NoParity;
+    QSerialPort::StopBits stop = QSerialPort::StopBits::OneStop;
+    QSerialPort::FlowControl flow = QSerialPort::FlowControl::NoFlowControl;
+
+    if (serial->isOpen()){
+        serial->close();
         ui->btnConnect->setText("Connect");
-    }
-    else{
-        connectState = servo->connect(ui->comboPort->currentText(), ui->comboBaud->currentText());
-        ui->btnConnect->setText("Disconnect");
-    }
-}
-
-void MainWindow::btnReadyClicked(){
-    for(uint i = 1; i <= 2; i++){
-        QString prod_no = QString::number(servo->readProdNo(i));
-        QString prod_ver = QString::number(servo->readProdVer(i));
-        QString firm_ver = QString::number(servo->readFirmVer(i));
-        QString pos_slope = QString::number(servo->readPositionSlope(i));
-        QString pos_max = QString::number(servo->readPositionMax(i));
-        QString pos_min = QString::number(servo->readPositionMin(i));
-        QString vel_max = QString::number(servo->readVelocityMax(i));
-        QString tor_max = QString::number(servo->readTorqueMax(i));
-        QString vol_max = QString::number(servo->readVoltageMax(i));
-        QString vol_min = QString::number(servo->readVoltageMin(i));
-        QString tem_max = QString::number(servo->readTemperMax(i));
-        uint pos = servo->readPosition(i);
-        int vel = servo->readVelocity(i);
-        int tor = servo->readTorque(i);
-        if (i == 1){
-            ui->txtProdNo->setText(prod_no);
-            ui->txtProdVer->setText(prod_ver);
-            ui->txtFirmVer->setText(firm_ver);
-            ui->txtPosSlope->setText(pos_slope);
-            ui->txtPosMax->setText(pos_max);
-            ui->txtPosMin->setText(pos_min);
-            ui->txtVelMax->setText(vel_max);
-            ui->txtTorMax->setText(tor_max);
-            ui->txtVolMax->setText(vol_max);
-            ui->txtVolMin->setText(vol_min);
-            ui->txtTempMax->setText(tem_max);
-
-            ui->txtPos->setText(QString::number(pos));
-            ui->txtVel->setText(QString::number(vel));
-            ui->txtTor->setText(QString::number(tor));
-
-            ui->vsPos->setRange(pos_min.toInt(), pos_max.toInt());
-            ui->vsVel->setRange(0, vel_max.toInt());
-            ui->vsTor->setRange(0, tor_max.toInt());
-            ui->vsPos->setValue(static_cast<int>(pos));
-            ui->vsVel->setValue(vel);
-            ui->vsTor->setValue(tor);
-        }
-        else if(i == 2){
-            ui->txtProdNo_2->setText(prod_no);
-            ui->txtProdVer_2->setText(prod_ver);
-            ui->txtFirmVer_2->setText(firm_ver);
-            ui->txtPosSlope_2->setText(pos_slope);
-            ui->txtPosMax_2->setText(pos_max);
-            ui->txtPosMin_2->setText(pos_min);
-            ui->txtVelMax_2->setText(vel_max);
-            ui->txtTorMax_2->setText(tor_max);
-            ui->txtVolMax_2->setText(vol_max);
-            ui->txtVolMin_2->setText(vol_min);
-            ui->txtTempMax_2->setText(tem_max);
-
-            ui->txtPos_2->setText(QString::number(pos));
-            ui->txtVel_2->setText(QString::number(vel));
-            ui->txtTor_2->setText(QString::number(tor));
-
-            ui->vsPos_2->setRange(pos_min.toInt(), pos_max.toInt());
-            ui->vsVel_2->setRange(0, vel_max.toInt());
-            ui->vsTor_2->setRange(0, tor_max.toInt());
-            ui->vsPos_2->setValue(static_cast<int>(pos));
-            ui->vsVel_2->setValue(vel);
-            ui->vsTor_2->setValue(tor);
-        }
-        else if(i == 3){
-            ui->txtProdNo_3->setText(prod_no);
-            ui->txtProdVer_3->setText(prod_ver);
-            ui->txtFirmVer_3->setText(firm_ver);
-            ui->txtPosSlope_3->setText(pos_slope);
-            ui->txtPosMax_3->setText(pos_max);
-            ui->txtPosMin_3->setText(pos_min);
-            ui->txtVelMax_3->setText(vel_max);
-            ui->txtTorMax_3->setText(tor_max);
-            ui->txtVolMax_3->setText(vol_max);
-            ui->txtVolMin_3->setText(vol_min);
-            ui->txtTempMax_3->setText(tem_max);
-
-            ui->txtPos_3->setText(QString::number(pos));
-            ui->txtVel_3->setText(QString::number(vel));
-            ui->txtTor_3->setText(QString::number(tor));
-
-            ui->vsPos_3->setRange(pos_min.toInt(), pos_max.toInt());
-            ui->vsVel_3->setRange(0, vel_max.toInt());
-            ui->vsTor_3->setRange(0, tor_max.toInt());
-            ui->vsPos_3->setValue(static_cast<int>(pos));
-            ui->vsVel_3->setValue(vel);
-            ui->vsTor_3->setValue(tor);
-        }
-    }
-}
-
-void MainWindow::btnApplyClicked(){
-    vel_new = ui->txtVelNew->text().toUInt();
-    tor_new = ui->txtTorNew->text().toUInt();
-    servo->writeGroupNewVelocity(static_cast<uint>(vel_new));
-    servo->writeGroupNewTorque(static_cast<uint>(tor_new));
-}
-
-void MainWindow::btnRunClicked(){
-    if (run){
+        ui->txtPort->setEnabled(true);
+        ui->txtBaud->setEnabled(true);
+        qDebug() << tr("Disconnected to %1").arg(name);
         timer->stop();
-        run = false;
-        ui->btnRun->setText("Run");
     }
     else{
-        timer->start();
-        run = true;
-        ui->btnRun->setText("Stop");
+        serial->setPortName(name);
+        serial->setBaudRate(baud);
+        serial->setDataBits(bit);
+        serial->setParity(parity);
+        serial->setStopBits(stop);
+        serial->setFlowControl(flow);
+        if (serial->open(QIODevice::ReadWrite)){
+            qDebug() << tr("Connected to %1 : %2, %3, %4, %5, %6")
+                        .arg(name).arg(QString::number(baud)).arg(QString::number(bit))
+                        .arg(QString::number(parity)).arg(QString::number(stop)).arg(QString::number(flow));
+            ui->btnConnect->setText("Disconnect");
+            ui->txtPort->setEnabled(false);
+            ui->txtBaud->setEnabled(false);
+            timer->start();
+        }
+        else{
+            qDebug() << tr("Error %1").arg(serial->errorString());
+        }
     }
 }
 
 void MainWindow::update(){
-    uint pos1 = servo->readPosition(1);
-    int vel1 = servo->readVelocity(1);
-    int tor1 = servo->readTorque(1);
-    uint pos2 = servo->readPosition(2);
-    int vel2 = servo->readVelocity(2);
-    int tor2 = servo->readTorque(2);
-    uint pos3 = servo->readPosition(3);
-    int vel3 = servo->readVelocity(3);
-    int tor3 = servo->readTorque(3);
+    uint head=0x96, id=0x01, addr = regCurrenInfor[indx],len=0, param=0, checksum=0;
+    QByteArray data;
+    checksum = (id + addr + len + param)%256;
+    data.append(static_cast<char>(head));
+    data.append(static_cast<char>(id));
+    data.append(static_cast<char>(addr));
+    data.append(static_cast<char>(len));
+    data.append(static_cast<char>(checksum));
+    qDebug() << "Tx data : " + data.toHex();
+    serial->write(data);
+    serial->sendBreak(1);
 
-    if (vel1 < 0){
+//    uint head=0x96, id=0x01, addr = 0x34, len=2, param = 5, checksum=0;
+//    QByteArray data;
+//    checksum = (id + addr + len + param)%256;
+//    data.append(static_cast<char>(head));
+//    data.append(static_cast<char>(id));
+//    data.append(static_cast<char>(addr));
+//    data.append(static_cast<char>(len));
+//    data.append(static_cast<char>(param%256));
+//    data.append(static_cast<char>(param/256));
+//    data.append(static_cast<char>(checksum));
+//    qDebug() << "Tx data : " + data.toHex();
+//    serial->write(data);
+//    serial->waitForBytesWritten(-1);
 
-    }
-    if (tor1 < 0){
+//    head = 0x96;
+//    id = 0x01;
+//    addr = 0x70;
+//    len = 2;
+//    checksum = (id + addr + len + 0xFF + 0xFF)%256;
+//    data.append(static_cast<char>(head));
+//    data.append(static_cast<char>(id));
+//    data.append(static_cast<char>(addr));
+//    data.append(static_cast<char>(len));
+//    data.append(static_cast<char>(0xFF));
+//    data.append(static_cast<char>(0xFF));
+//    data.append(static_cast<char>(checksum));
+//    qDebug() << "Tx data : " + data.toHex();
+//    serial->write(data);
+//    serial->waitForBytesWritten(-1);
+}
 
-    }
-    if (vel2 < 0){
-
-    }
-    if (tor2 < 0){
-
-    }
-    if (vel3 < 0){
-
-    }
-    if (tor3 < 0){
-
-    }
-
-    ui->txtPos->setText(QString::number(pos1));
-    ui->txtVel->setText(QString::number(vel1 > 0 ? vel1 : -vel1));
-    ui->txtTor->setText(QString::number(tor1 > 0 ? tor1 : -tor1));
-
-    ui->vsPos->setValue(static_cast<int>(pos1));
-    ui->vsVel->setValue(vel1);
-    ui->vsTor->setValue(tor1);
-
-    ui->txtPos_2->setText(QString::number(pos2));
-    ui->txtVel_2->setText(QString::number(vel2 > 0 ? vel2 : -vel2));
-    ui->txtTor_2->setText(QString::number(tor2 > 0 ? tor2 : -tor2));
-
-    ui->vsPos_2->setValue(static_cast<int>(pos2));
-    ui->vsVel_2->setValue(vel2);
-    ui->vsTor_2->setValue(tor2);
-
-    ui->txtPos_3->setText(QString::number(pos3));
-    ui->txtVel_3->setText(QString::number(vel3 > 0 ? vel3 : -vel3));
-    ui->txtTor_3->setText(QString::number(tor3 > 0 ? tor3 : -tor3));
-
-    ui->vsPos_3->setValue(static_cast<int>(pos3));
-    ui->vsVel_3->setValue(vel3);
-    ui->vsTor_3->setValue(tor3);
-
-    uint value;
-    if (direction){
-        if (abs(static_cast<int>(pos1) - 1024) < 5 && abs(static_cast<int>(pos2) - 1024) < 5 && abs(static_cast<int>(pos3) - 1024) < 5){
-            direction = false;
-            value = 3072;
-        }
-        else{
-            value = 1024;
+void MainWindow::readData(){
+    const QByteArray data = serial->readAll();
+    qDebug() << "Rx data : " + data.toHex();
+    uchar *ch = new uchar[data.length()];
+    uint startIndex = 0;
+    for (int j = 0; j < data.length(); j++) {
+        ch[j] = static_cast<uchar>(data.at(j));
+        if (ch[j] == 0x69){
+            startIndex = static_cast<uint>(j);
         }
     }
-    else{
-        if (abs(static_cast<int>(pos1) - 3072) < 5 && abs(static_cast<int>(pos2) - 3072) < 5 && abs(static_cast<int>(pos3) - 3072) < 5){
-            direction = true;
-            value = 1024;
-        }
-        else{
-            value = 3072;
-        }
-    }
+    uint addr = ch[startIndex], id = ch[startIndex + 1];
+    if (addr == 0x69) { // Header
+//        timer->stop();
+        if (id == 0x01){ // ID
+            uint len = ch[startIndex + 3];
+            uint bit[2] = {0,0};
+            for(uint i = 0; i < len; i++){
+                bit[i] = ch[startIndex + i + 4];
+            }
+            QString status_message = "";
 
-    servo->writeGroupNewPosition(value);
+            switch(ch[startIndex + 2]) // Address
+            {
+            case REG_PRODUCT_NO:
+            {
+                status_message += "Product Number : " + QString::number(bit[0]);
+                ui->txtProdNo->setText(QString::number(bit[0]));
+                break;
+            }
+            case REG_PRODUCT_VER:
+            {
+                status_message += "Product Version : " + QString::number(bit[0]);
+                ui->txtProdVer->setText(QString::number(bit[0]));
+                break;
+            }
+            case REG_FIRMWARE_VER:
+            {
+                status_message += "Firmware Version : " + QString::number(bit[0]);
+                ui->txtFirmVer->setText(QString::number(bit[0]));
+                break;
+            }
+            case REG_SERIAL_NO_SUB: {
+                status_message += "Serial Number Low Byte : " + QString::number(bit[0]);
+                break;
+            }
+            case REG_SERIAL_NO_MAIN: {
+                status_message += "Serial Number High Byte : " + QString::number(bit[0]);
+                break;
+            }
+            case REG_STATUS_FLAG:
+            {
+                if (bit[0] & STATUS_FLAG::SIGNAL_ADDRESS_ERROR) {
+                    status_message += "Signal Address Error\n";
+                    ui->cbSignalAddressError->setChecked(true);
+                }
+                else if(bit[0] & STATUS_FLAG::SIGNAL_CHECKSUM_ERROR) {
+                    status_message += "Signal Checksum Error\n";
+                    ui->cbSignalChecksumError->setChecked(true);
+                }
+                else if(bit[0] & STATUS_FLAG::SIGNAL_INTERVAL_ERROR){
+                    status_message += "Signal Interval Error\n";
+                    ui->cbSignalIntervalError->setChecked(true);
+                }
+                else if(bit[0] & STATUS_FLAG::SIGNAL_LIMIT_ERROR) {
+                    status_message += "Signal Limit Error\n";
+                    ui->cbSignalLimitError->setChecked(true);
+                }
+                else if(bit[0] & STATUS_FLAG::SIGNAL_FORMAT_ERROR) {
+                    status_message += "Signal Format Error\n";
+                    ui->cbSignalFormatError->setChecked(true);
+                }
+                else if(bit[0] & STATUS_FLAG::SIGNAL_SEND_ERROR) {
+                    status_message += "Signal Send Error\n";
+                    ui->cbSignalSendError->setChecked(true);
+                }
+                else if(bit[1] & STATUS_FLAG::POSITION_MIN_OVER) {
+                    status_message += "Minimum Position Over\n";
+                    ui->cbPosMinOver->setChecked(true);
+                }
+                else if(bit[1] & STATUS_FLAG::POSITION_MAX_OVER) {
+                    status_message += "Maximum Position Over\n";
+                    ui->cbPosMaxOver->setChecked(true);
+                }
+                else if(bit[1] & STATUS_FLAG::TEMPER_OVER) {
+                    status_message += "Temperature Limit Over\n";
+                    ui->cbTempOver->setChecked(true);
+                }
+                else if(bit[1] & STATUS_FLAG::TORQUE_OVER) {
+                    status_message += "Torque Limit Over\n";
+                    ui->cbTorOver->setChecked(true);
+                }
+                else if(bit[1] & STATUS_FLAG::VOLTAGE_MIN_OVER) {
+                    status_message += "Minimum Voltage Over\n";
+                    ui->cbVolMinOver->setChecked(true);
+                }
+                else if(bit[1] & STATUS_FLAG::VOLTAGE_MAX_OVER) {
+                    status_message += "Maximum Voltage Over\n";
+                    ui->cbVolMaxOver->setChecked(true);
+                }
+                else {
+                    status_message += "Status No Error";
+                }
+                ui->cbSignalSendError->setEnabled(false);
+                ui->cbSignalLimitError->setEnabled(false);
+                ui->cbSignalFormatError->setEnabled(false);
+                ui->cbSignalAddressError->setEnabled(false);
+                ui->cbSignalChecksumError->setEnabled(false);
+                ui->cbSignalIntervalError->setEnabled(false);
+                ui->cbPosMaxOver->setEnabled(false);
+                ui->cbPosMinOver->setEnabled(false);
+                ui->cbVolMaxOver->setEnabled(false);
+                ui->cbVolMinOver->setEnabled(false);
+                ui->cbTorOver->setEnabled(false);
+                ui->cbTempOver->setEnabled(false);
+                break;
+            }
+            case REG_POSITION: {
+                uint value = bit[1]*256 + bit[0];
+                status_message += "Position : " + QString::number(value);
+                ui->hsPos->setValue(static_cast<int>(value));
+                ui->txtPos->setText(QString::number(value));
+                break;
+            }
+            case REG_VELOCITY:{
+                int value = static_cast<char>(bit[1])*256 + static_cast<char>(bit[0]);
+                status_message += "Velocity : " + QString::number(value);
+                ui->hsVel->setValue(value < 0 ? -value : value);
+                ui->txtVel->setText(QString::number(value));
+                break;
+            }
+            case REG_TORQUE:{
+                int value = static_cast<char>(bit[1])*256 + static_cast<char>(bit[0]);
+                status_message += "Torque : " + QString::number(value);
+                ui->hsTor->setValue(value < 0 ? -value : value);
+                ui->txtTor->setText(QString::number(value));
+                break;
+            }
+            case REG_VOLTAGE:{
+                uint value = bit[1]*256 + bit[0];
+                status_message += "Voltage : " + QString::number(value);
+                break;
+            }
+            case REG_TEMPER: {
+                uint value = bit[1]*256 + bit[0];
+                status_message += "Temperature : " + QString::number(value);
+                break;
+            }
+            case REG_POSITION_NEW:{
+                uint value = bit[1]*256 + bit[0];
+                status_message += "Position New : " + QString::number(value);
+//                ui->hsPosNew->setValue(value);
+                ui->txtPosNew->setText(QString::number(value));
+                break;
+            }
+            case REG_VELOCITY_NEW:{
+                uint value = bit[1]*256 + bit[0];
+                status_message += "Velocity New : " + QString::number(value);
+//                ui->hsVelNew->setValue(value);
+                ui->txtVelNew->setText(QString::number(value));
+                break;
+            }
+            case REG_TORQUE_NEW:{
+                uint value = bit[1]*256 + bit[0];
+                status_message += "Torque New : " + QString::number(value);
+//                ui->hsTorNew->setValue(value);
+                ui->txtTorNew->setText(QString::number(value));
+                break;
+            }
+            case REG_TURN_NEW:{
+                break;
+            }
+            case REG_ID:
+            {
+                status_message += "ID : " + QString::number(*bit);
+                ui->txtID->setText(QString::number(*bit));
+                break;
+            }
+            case REG_BAUDRATE:{
+                uint value = bit[1]*256 + bit[0];
+                status_message += "Baud Rate : " + QString::number(value);
+                break;
+            }
+            case REG_SIGNAL_MODE:{
+                break;
+            }
+            case REG_SIMPLE_RETURN_DELAY:{
+                break;
+            }
+            case REG_NORMAL_RETURN_DELAY:{
+                break;
+            }
+            case REG_POWER_CONFIG:{
+                break;
+            }
+            case REG_EMERGENCY_STOP:{
+                break;
+            }
+            case REG_ACTION_MODE:{
+                break;
+            }
+            case REG_POSITION_SLOPE:{
+                uint value = bit[1]*256 + bit[0];
+                status_message += "Position Slope : " + QString::number(value);
+                ui->txtPosSlope->setText(QString::number(value));
+                break;
+            }
+            case REG_POSITION_DEADBAND:{
+                uint value = bit[1]*256 + bit[0];
+                status_message += "Position Deadband : " + QString::number(value);
+                ui->txtPosDead->setText(QString::number(value));
+                break;
+            }
+            case REG_POSITION_MAX:{
+                uint value = bit[1]*256 + bit[0];
+                status_message += "Position Max : " + QString::number(value);
+                ui->txtPosMax->setText(QString::number(value));
+                ui->hsPos->setMaximum(static_cast<int>(value));
+                ui->hsPosNew->setMaximum(static_cast<int>(value));
+                break;
+            }
+            case REG_POSITION_MIN:{
+                uint value = bit[1]*256 + bit[0];
+                status_message += "Position Min : " + QString::number(value);
+                ui->txtPosMin->setText(QString::number(value));
+                ui->hsPos->setMinimum(static_cast<int>(value));
+                ui->hsPosNew->setMinimum(static_cast<int>(value));
+                break;
+            }
+            case REG_VELOCITY_MAX:{
+                uint value = bit[1]*256 + bit[0];
+                status_message += "Velocity Max : " + QString::number(value);
+                ui->txtVelMax->setText(QString::number(value));
+                ui->hsVel->setRange(0, static_cast<int>(value));
+                ui->hsVelNew->setRange(0, static_cast<int>(value));
+                break;
+            }
+            case REG_TORQUE_MAX:{
+                uint value = bit[1]*256 + bit[0];
+                status_message += "Torque Max : " + QString::number(value);
+                ui->txtTorMax->setText(QString::number(value));
+                ui->hsTor->setRange(0, static_cast<int>(value));
+                ui->hsTorNew->setRange(0, static_cast<int>(value));
+                break;
+            }
+            case REG_VOLTAGE_MAX:{
+                uint value = bit[1]*256 + bit[0];
+                status_message += "Voltage Max : " + QString::number(value);
+                ui->txtVolMax->setText(QString::number(value));
+                break;
+            }
+            case REG_VOLTAGE_MIN:{
+                uint value = bit[1]*256 + bit[0];
+                status_message += "Voltage Min : " + QString::number(value);
+                ui->txtVolMin->setText(QString::number(value));
+                break;
+            }
+            case REG_TEMPER_MAX:{
+                uint value = bit[1]*256 + bit[0];
+                status_message += "Temperature Max : " + QString::number(value);
+                ui->txtTempMax->setText(QString::number(value));
+                break;
+            }
+            default: {
+                status_message += "Nothing";
+                break;
+            }
+            }
+//            qDebug() << status_message;
+            delete[] ch;
+        }
+        ui->status->setText(QString::number(indx));
+        indx = indx >= 4 ? 0 : indx + 1;
+        indx_pd++;
+        indx_conf++;
+        if (indx_pd >= 3){
+            timerProductInfor->stop();
+            if (ui->txtProdNo->text().length() > 0 &&
+                    ui->txtProdVer->text().length() > 0 &&
+                    ui->txtFirmVer->text().length() > 0)
+            {
+                timer->start();
+            }
+            else{
+                timerProductInfor->start();
+                indx_pd = 0;
+            }
+        }
+        if (indx_conf >= 10){
+            timerConfigInfor->stop();
+            if (ui->txtID->text().length() > 0 &&
+                    ui->txtPosSlope->text().length() > 0 &&
+                    ui->txtPosDead->text().length() > 0 &&
+                    ui->txtPosMax->text().length() > 0 &&
+                    ui->txtPosMin->text().length() > 0 &&
+                    ui->txtVelMax->text().length() > 0 &&
+                    ui->txtTorMax->text().length() > 0 &&
+                    ui->txtVolMax->text().length() > 0 &&
+                    ui->txtVolMin->text().length() > 0 &&
+                    ui->txtTempMax->text().length() > 0)
+            {
+                timer->start();
+            }
+            else{
+                timerConfigInfor->start();
+                indx_conf = 0;
+            }
+
+        }
+//        timer->start();
+    }
+}
+
+void MainWindow::handleError(QSerialPort::SerialPortError error){
+    if (error == QSerialPort::ResourceError) {
+        qDebug() << tr("Critical Error %1").arg(serial->errorString());
+        serial->close();
+    }
+}
+
+void MainWindow::sliderValueChanged()
+{
+    QString objName = sender()->objectName();
+    int value = 0;
+    int head=0x96, id=0x01, addr = 0, len=2, paramH, paramL, checksum=0;
+    if (objName.contains("Pos")){
+        addr = REG_POSITION_NEW;
+        value = ui->hsPosNew->value();
+        ui->txtPosNew->setText(QString::number(value));
+    }
+    else if(objName.contains("Vel")){
+        addr = REG_VELOCITY_NEW;
+        value = ui->hsVelNew->value();
+        ui->txtVelNew->setText(QString::number(value));
+    }
+    else if(objName.contains("Tor")){
+        addr = REG_TORQUE_NEW;
+        value = ui->hsTorNew->value();
+        ui->txtTorNew->setText(QString::number(value));
+    }
+    paramH = value/256;
+    paramL = value%256;
+    QByteArray data;
+    checksum = (id + addr + len + paramH + paramL)%256;
+    data.append(static_cast<char>(head));
+    data.append(static_cast<char>(id));
+    data.append(static_cast<char>(addr));
+    data.append(static_cast<char>(len));
+    data.append(static_cast<char>(paramL));
+    data.append(static_cast<char>(paramH));
+    data.append(static_cast<char>(checksum));
+
+//    qDebug() << "Tx data : " + data.toHex();
+    serial->write(data);
+//    serial->sendBreak(1);
+    timer->start();
+}
+
+void MainWindow::btnProductInforClicked(){
+    timer->stop();
+    indx_pd = 0;
+    timerProductInfor->start();
+}
+
+void MainWindow::btnConfigInforClicked(){
+    timer->stop();
+    indx_conf = 0;
+    timerConfigInfor->start();
+}
+
+void MainWindow::updateProductInfor(){
+    uint head=0x96, id=0x01, addr = regProductInfor[indx_pd],len=0, param=0, checksum=0;
+    QByteArray data;
+    checksum = (id + addr + len + param)%256;
+    data.append(static_cast<char>(head));
+    data.append(static_cast<char>(id));
+    data.append(static_cast<char>(addr));
+    data.append(static_cast<char>(len));
+    data.append(static_cast<char>(checksum));
+    qDebug() << "Tx data : " + data.toHex();
+    serial->write(data);
+    serial->sendBreak(1);
+}
+
+void MainWindow::updateConfigInfor(){
+    uint head=0x96, id=0x01, addr = regConfigInfor[indx_conf],len=0, param=0, checksum=0;
+    QByteArray data;
+    checksum = (id + addr + len + param)%256;
+    data.append(static_cast<char>(head));
+    data.append(static_cast<char>(id));
+    data.append(static_cast<char>(addr));
+    data.append(static_cast<char>(len));
+    data.append(static_cast<char>(checksum));
+    qDebug() << "Tx data : " + data.toHex();
+    serial->write(data);
+    serial->sendBreak(1);
 }
